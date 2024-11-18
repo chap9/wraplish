@@ -113,30 +113,41 @@ class Wraplish:
 
     @threaded
     def change_buffer(self, buffer_name, begin, end, content, ticker, sync_flag):
+        new_flag = False
         if sync_flag:
             self.sync_buffer(buffer_name)
+            new_flag = True
         elif buffer_name not in self.buffer_content_dict:
             self.sync_buffer(buffer_name)
-        else:
-            buffer_content = self.buffer_content_dict[buffer_name]
+            new_flag = True
 
-            begin = epc_arg_transformer(begin)
-            end = epc_arg_transformer(end)
+        buffer_content = self.buffer_content_dict[buffer_name]
+        begin = epc_arg_transformer(begin)
+        end = epc_arg_transformer(end)
 
-            start_line = begin['line']
-            start_char = begin['character']
-            end_line = end['line']
-            end_char = end['character']
+        start_line = begin['line']
+        start_char = begin['character']
+        end_line = end['line']
+        end_char = end['character']
 
-            start_pos = get_position(buffer_content, start_line, start_char)
-            end_pos = get_position(buffer_content, end_line, end_char)
+        self.add_space_only_for_modified_line = get_emacs_vars([
+            "wraplish-add-space-only-for-modified-line",
+        ])
 
+        start_line_pos, start_pos, end_pos, end_line_pos = get_modify_position(buffer_content, start_line, end_line, start_char, end_char)
+
+        if not new_flag:
             buffer_content = buffer_content[:start_pos] + content + buffer_content[end_pos:]
-
             self.buffer_content_dict[buffer_name] = buffer_content
 
         self.buffer_ticker_dict[buffer_name] = ticker
-        self.find_space_positions(buffer_name, self.buffer_content_dict[buffer_name], ticker)
+        if self.add_space_only_for_modified_line:
+            to_be_processed = self.buffer_content_dict[buffer_name][start_line_pos : end_line_pos + 1]
+            offset = start_line_pos
+        else:
+            to_be_processed = self.buffer_content_dict[buffer_name]
+            offset = 0
+        self.find_space_positions(buffer_name, to_be_processed, ticker, offset)
 
     def sync_buffer(self, buffer_name):
         self.buffer_content_dict[buffer_name] = get_emacs_func_result('get-buffer-content', buffer_name)
@@ -150,7 +161,7 @@ class Wraplish:
         close_epc_client()
 
     @threaded
-    def find_space_positions(self, buffer_name, text, ticker):
+    def find_space_positions(self, buffer_name, text, ticker, offset):
         space_positions = []
 
         (self.add_space_after_chinese_punctuation,
@@ -161,56 +172,56 @@ class Wraplish:
 
         # Find positions between English words and Chinese characters or Japanese Kanji
         for match in re.finditer(r'([a-zA-Z])([\u4e00-\u9fff])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between Chinese characters or Japanese Kanji and English words
         for match in re.finditer(r'([\u4e00-\u9fff])([a-zA-Z])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between English words and Korean Hangul characters
         for match in re.finditer(r'([a-zA-Z])([\uac00-\ud7a3])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between Korean Hangul characters and English words
         for match in re.finditer(r'((?<=\uac00)[\ud7a3])([a-zA-Z])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between Arabic numbers and Chinese characters or Japanese Kanji
         for match in re.finditer(r'([0-9])([\u4e00-\u9fff])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between Chinese characters or Japanese Kanji and Arabic numbers
         for match in re.finditer(r'([\u4e00-\u9fff])([0-9])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between Arabic numbers and Korean Hangul characters
         for match in re.finditer(r'([0-9])([\uac00-\ud7a3])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between Korean Hangul characters and Arabic numbers
         for match in re.finditer(r'((?<=\uac00)[\ud7a3])([0-9])', text):
-            space_positions.append(match.start(2))
+            space_positions.append(match.start(2) + offset)
 
         # Find positions between percentages and Chinese characters
         for match in re.finditer(r'([0-9]+(?:\.[0-9]+)?)%(?=[\u4e00-\u9fff])', text):
-            space_positions.append(match.end(0))
+            space_positions.append(match.end(0) + offset)
 
         # Find positions where a Chinese punctuation is not followed by a space or another Chinese punctuation, or follow \\
         if self.add_space_after_chinese_punctuation:
             chinese_punctuations = r'，|。|；|：|？|！|、'
             for match in re.finditer(r'({})(?!(\)|）|\*|[\s\“\”\"{}]|(?<=：)\\))'.format(chinese_punctuations, chinese_punctuations), text):
-                space_positions.append(match.end(0))
+                space_positions.append(match.end(0) + offset)
 
         if self.add_space_before_markdown_link:
             # Find positions where a Unicode character is followed by a
             # Markdown link with link_text starting with an English letter
             for match in re.finditer(r'([\u4e00-\u9fff\uac00-\ud7a3])\[(?P<link_text>[a-zA-Z][^\]]+)]\((?P<url>[^\)]+)\)', text):
-                space_positions.append(match.start(1) + 1)
+                space_positions.append(match.start(1) + 1 + offset)
 
             # Find positions where the closing parenthesis of a Markdown link
             # is followed by a Unicode character and not a space
             for match in re.finditer(r'\[(?P<link_text>[^\]]+)]\((?P<url>[^\)]*[a-zA-Z]+)\)([\u4e00-\u9fff\uac00-\ud7a3])(?!\s)', text):
-                space_positions.append(match.start(3))
+                space_positions.append(match.start(3) + offset)
 
         space_positions.sort()
 
